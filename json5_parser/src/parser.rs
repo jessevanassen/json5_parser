@@ -1,10 +1,12 @@
 use crate::{error::JsonParseErrorCause, Json, JsonParseError};
 
+const WHITESPACE_CHARACTERS: [u8; 4] = [b' ', b'\n', b'\t', b'\r'];
+
 type Result<T = Json> = ::std::result::Result<T, JsonParseError>;
 
 pub fn parse_json(source: impl AsRef<str>) -> Result {
 	let source = source.as_ref();
-	Parser::new(source).parse_value()
+	Parser::new(source).parse()
 }
 
 struct Parser<'a> {
@@ -15,13 +17,27 @@ struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-	fn new(source: &'a str) -> Self {
+	pub fn new(source: &'a str) -> Self {
 		Parser {
 			source: source.as_bytes(),
 			index: 0,
 			row: 0,
 			column: 0,
 		}
+	}
+
+	pub fn parse(&mut self) -> Result {
+		self.consume_whitespace();
+
+		let result = self.parse_value()?;
+
+		self.consume_whitespace();
+
+		if let Some(char) = self.peek() {
+			return Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter { char: char as char }));
+		}
+
+		Ok(result)
 	}
 
 	fn parse_value(&mut self) -> Result {
@@ -91,6 +107,12 @@ impl<'a> Parser<'a> {
 		Some(peeked)
 	}
 
+	fn consume_whitespace(&mut self) {
+		while self.peek().is_some_and(|ch| WHITESPACE_CHARACTERS.contains(&ch)) {
+			self.consume();
+		}
+	}
+
 	fn create_error(&self, cause: JsonParseErrorCause) -> JsonParseError {
 		JsonParseError {
 			row: self.row,
@@ -123,11 +145,27 @@ mod tests {
 		}
 
 		fn test_parse_literal_value(expected: Json, input: &str) {
-			let mut parser = Parser::new(input);
-			assert_eq!(parser.parse_value(), Ok(expected));
-			assert_eq!(parser.row, 0);
-			assert_eq!(parser.column, input.len());
-			assert_eq!(parser.index, input.len());
+			for (leading, trailing) in [(0, 0), (0, 3), (4, 0), (5, 6)] {
+				let input = format!("{}{input}{}", generate_whitespace(leading), generate_whitespace(trailing));
+				let mut parser = Parser::new(&input);
+				assert_eq!(parser.parse(), Ok(expected.clone()));
+			}
 		}
+	}
+
+	#[test]
+	fn test_trailing_value_returns_err() {
+		assert!(parse_json("true false").is_err());
+	}
+
+	fn generate_whitespace(length: usize) -> String {
+		let chars = (0..length)
+			.map(|_| {
+				rand::seq::SliceRandom::choose(&WHITESPACE_CHARACTERS[..], &mut rand::thread_rng())
+					.copied()
+					.unwrap()
+			})
+			.collect();
+		String::from_utf8(chars).unwrap()
 	}
 }

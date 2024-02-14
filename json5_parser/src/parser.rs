@@ -1,6 +1,6 @@
-use crate::Json;
+use crate::{error::JsonParseErrorCause, Json, JsonParseError};
 
-type Result<T = Json> = ::std::result::Result<T, ()>;
+type Result<T = Json> = ::std::result::Result<T, JsonParseError>;
 
 pub fn parse_json(source: impl AsRef<str>) -> Result {
 	let source = source.as_ref();
@@ -29,7 +29,11 @@ impl<'a> Parser<'a> {
 			Some(b'f') => self.parse_literal(b"false", Json::Boolean(false)),
 			Some(b't') => self.parse_literal(b"true", Json::Boolean(true)),
 			Some(b'n') => self.parse_literal(b"null", Json::Null),
-			_ => Err(()),
+			Some(c) => {
+				Err(self
+					.create_error(JsonParseErrorCause::UnexpectedCharacter { char: c as char }))
+			}
+			None => Err(self.create_error(JsonParseErrorCause::UnexpectedEndOfFile)),
 		}
 	}
 
@@ -44,11 +48,22 @@ impl<'a> Parser<'a> {
 
 	fn match_char(&mut self, expected: u8) -> Result<()> {
 		match self.peek() {
-			None => Err(()),
-			Some(char) if char != expected => Err(()),
-			Some(_) => {
+			Some(ch) if ch == expected => {
 				self.consume().unwrap();
 				Ok(())
+			}
+			Some(ch) => {
+				let cause = JsonParseErrorCause::MismatchedCharacter {
+					expected: expected as char,
+					char: ch as char,
+				};
+				Err(self.create_error(cause))
+			}
+			None => {
+				let cause = JsonParseErrorCause::MismatchedEndOfFile {
+					expected: expected as char,
+				};
+				Err(self.create_error(cause))
 			}
 		}
 	}
@@ -74,6 +89,14 @@ impl<'a> Parser<'a> {
 		}
 
 		Some(peeked)
+	}
+
+	fn create_error(&self, cause: JsonParseErrorCause) -> JsonParseError {
+		JsonParseError {
+			row: self.row,
+			column: self.column,
+			cause,
+		}
 	}
 }
 

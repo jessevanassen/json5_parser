@@ -22,6 +22,7 @@ pub enum JsonParseErrorCause {
 	UnexpectedCharacter { char: char },
 	MismatchedEndOfFile { expected: char },
 	UnexpectedEndOfFile,
+	InvalidNumber,
 }
 
 impl Display for JsonParseErrorCause {
@@ -41,6 +42,9 @@ impl Display for JsonParseErrorCause {
 			}
 			JsonParseErrorCause::UnexpectedEndOfFile => {
 				write!(f, "Unexpected end of file")
+			}
+			JsonParseErrorCause::InvalidNumber => {
+				write!(f, "Invalid number")
 			}
 		}
 	}

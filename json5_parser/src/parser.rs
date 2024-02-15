@@ -10,7 +10,7 @@ pub fn parse_json(source: impl AsRef<str>) -> Result {
 }
 
 struct Parser<'a> {
-	source: &'a [u8],
+	source: &'a str,
 	index: usize,
 	row: usize,
 	column: usize,
@@ -19,7 +19,7 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
 	pub fn new(source: &'a str) -> Self {
 		Parser {
-			source: source.as_bytes(),
+			source,
 			index: 0,
 			row: 0,
 			column: 0,
@@ -34,7 +34,9 @@ impl<'a> Parser<'a> {
 		self.consume_whitespace();
 
 		if let Some(char) = self.peek() {
-			return Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter { char: char as char }));
+			return Err(
+				self.create_error(JsonParseErrorCause::UnexpectedCharacter { char: char as char })
+			);
 		}
 
 		Ok(result)
@@ -45,9 +47,9 @@ impl<'a> Parser<'a> {
 			Some(b'f') => self.parse_literal(b"false", Json::Boolean(false)),
 			Some(b't') => self.parse_literal(b"true", Json::Boolean(true)),
 			Some(b'n') => self.parse_literal(b"null", Json::Null),
+			Some(b'-' | b'0'..=b'9') => self.parse_number(),
 			Some(c) => {
-				Err(self
-					.create_error(JsonParseErrorCause::UnexpectedCharacter { char: c as char }))
+				Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter { char: c as char }))
 			}
 			None => Err(self.create_error(JsonParseErrorCause::UnexpectedEndOfFile)),
 		}
@@ -58,8 +60,44 @@ impl<'a> Parser<'a> {
 		Ok(result)
 	}
 
+	fn parse_number(&mut self) -> Result {
+		let start = self.index;
+
+		self.consume_if(|ch| ch == b'-');
+
+		self.match_predicate(|ch| ch.is_ascii_digit())?;
+		self.consume_while(|ch| ch.is_ascii_digit());
+
+		if self.consume_if(|ch| ch == b'.') {
+			self.match_predicate(|ch| ch.is_ascii_digit())?;
+			self.consume_while(|ch| ch.is_ascii_digit());
+		}
+
+		if self.consume_if(|ch| ch == b'e' || ch == b'E') {
+			self.consume_if(|ch| ch == b'+' || ch == b'-');
+			self.match_predicate(|ch| ch.is_ascii_digit())?;
+			self.consume_while(|ch| ch.is_ascii_digit());
+		}
+
+		self.source[start..self.index]
+			.parse()
+			.map(Json::Number)
+			.map_err(|_| self.create_error(JsonParseErrorCause::InvalidNumber))
+	}
+
 	fn peek(&self) -> Option<u8> {
-		self.source.get(self.index).copied()
+		self.source.as_bytes().get(self.index).copied()
+	}
+
+	fn match_predicate(&mut self, predicate: fn(u8) -> bool) -> Result<u8> {
+		match self.peek() {
+			Some(ch) if predicate(ch) => Ok(self.consume().unwrap()),
+			Some(ch) => {
+				Err(self
+					.create_error(JsonParseErrorCause::UnexpectedCharacter { char: ch as char }))
+			}
+			None => Err(self.create_error(JsonParseErrorCause::UnexpectedEndOfFile)),
+		}
 	}
 
 	fn match_char(&mut self, expected: u8) -> Result<()> {
@@ -107,10 +145,21 @@ impl<'a> Parser<'a> {
 		Some(peeked)
 	}
 
-	fn consume_whitespace(&mut self) {
-		while self.peek().is_some_and(|ch| WHITESPACE_CHARACTERS.contains(&ch)) {
+	fn consume_if(&mut self, predicate: fn(u8) -> bool) -> bool {
+		if self.peek().is_some_and(predicate) {
 			self.consume();
+			true
+		} else {
+			false
 		}
+	}
+
+	fn consume_while(&mut self, predicate: fn(u8) -> bool) {
+		while self.consume_if(predicate) {}
+	}
+
+	fn consume_whitespace(&mut self) {
+		self.consume_while(|ch| WHITESPACE_CHARACTERS.contains(&ch));
 	}
 
 	fn create_error(&self, cause: JsonParseErrorCause) -> JsonParseError {
@@ -146,10 +195,58 @@ mod tests {
 
 		fn test_parse_literal_value(expected: Json, input: &str) {
 			for (leading, trailing) in [(0, 0), (0, 3), (4, 0), (5, 6)] {
-				let input = format!("{}{input}{}", generate_whitespace(leading), generate_whitespace(trailing));
-				let mut parser = Parser::new(&input);
-				assert_eq!(parser.parse(), Ok(expected.clone()));
+				let input = format!(
+					"{}{input}{}",
+					generate_whitespace(leading),
+					generate_whitespace(trailing)
+				);
+				assert_eq!(parse_json(&input), Ok(expected.clone()));
 			}
+		}
+	}
+
+	mod numbers {
+		use super::*;
+
+		#[test]
+		fn test_positive_integer() {
+			assert_eq!(parse_json("0"), Ok(Json::Number(0.)));
+			assert_eq!(parse_json("12345"), Ok(Json::Number(12345.)));
+		}
+
+		#[test]
+		fn test_negative_integer() {
+			assert!(parse_json("-").is_err());
+			assert_eq!(parse_json("-1"), Ok(Json::Number(-1.)));
+			assert_eq!(parse_json("-12345"), Ok(Json::Number(-12345.)));
+		}
+
+		#[test]
+		fn test_positive_floats() {
+			assert!(parse_json("0.").is_err());
+			assert_eq!(parse_json("1.5"), Ok(Json::Number(1.5)));
+			assert_eq!(parse_json("123.25"), Ok(Json::Number(123.25)));
+		}
+
+		#[test]
+		fn test_negative_floats() {
+			assert!(parse_json("-0.").is_err());
+			assert_eq!(parse_json("-1.5"), Ok(Json::Number(-1.5)));
+			assert_eq!(parse_json("-123.25"), Ok(Json::Number(-123.25)));
+		}
+
+		#[test]
+		fn test_exponents() {
+			for input in ["1e", "1E", "1e+", "1e-"] {
+				assert!(parse_json(input).is_err());
+			}
+
+			assert_eq!(parse_json("1e3"), Ok(Json::Number(1000.)));
+			assert_eq!(parse_json("1E3"), Ok(Json::Number(1000.)));
+			assert_eq!(parse_json("1e+3"), Ok(Json::Number(1000.)));
+			assert_eq!(parse_json("1E+3"), Ok(Json::Number(1000.)));
+			assert_eq!(parse_json("5e-1"), Ok(Json::Number(0.5)));
+			assert_eq!(parse_json("5E-1"), Ok(Json::Number(0.5)));
 		}
 	}
 

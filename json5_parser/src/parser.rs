@@ -41,14 +41,14 @@ impl<'a> Parser<'a> {
 	}
 
 	fn parse_value(&mut self) -> Result {
-		match self.peek() {
-			Some(b'f') => self.parse_literal(b"false", Json::Boolean(false)),
-			Some(b't') => self.parse_literal(b"true", Json::Boolean(true)),
-			Some(b'n') => self.parse_literal(b"null", Json::Null),
-			Some(b'-' | b'0'..=b'9') => self.parse_number(),
-			Some(b'"') => self.parse_string(),
-			Some(_) => Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter)),
-			None => Err(self.create_error(JsonParseErrorCause::UnexpectedEndOfFile)),
+		match self.peek_some()? {
+			b'f' => self.parse_literal(b"false", Json::Boolean(false)),
+			b't' => self.parse_literal(b"true", Json::Boolean(true)),
+			b'n' => self.parse_literal(b"null", Json::Null),
+			b'-' | b'0'..=b'9' => self.parse_number(),
+			b'"' => self.parse_string(),
+			b'[' => self.parse_array(),
+			_ => Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter)),
 		}
 	}
 
@@ -139,6 +139,31 @@ impl<'a> Parser<'a> {
 		};
 
 		Ok(Json::String(result))
+	}
+
+	fn parse_array(&mut self) -> Result {
+		self.match_char(b'[')?;
+		self.consume_whitespace();
+
+		let mut content = Vec::<Json>::new();
+
+		if self.peek_some()? != b']' {
+			loop {
+				content.push(self.parse_value()?);
+				self.consume_whitespace();
+
+				if self.peek_some()? == b']' {
+					break;
+				}
+
+				self.match_char(b',')?;
+				self.consume_whitespace()
+			}
+		}
+
+		self.match_char(b']')?;
+
+		Ok(Json::Array(content))
 	}
 
 	fn peek(&self) -> Option<u8> {
@@ -380,9 +405,41 @@ mod tests {
 		}
 	}
 
+	mod array {
+		use super::*;
+
+		#[test]
+		fn test_parse_empty_array() {
+			assert_json("[]", Json::Array(Vec::new()));
+		}
+
+		#[test]
+		fn test_parse_array_with_primitives() {
+			assert_json(
+				"[true, 0,null]",
+				Json::Array(vec![Json::Boolean(true), Json::Number(0.), Json::Null]),
+			)
+		}
+
+		#[test]
+		fn test_parse_nested_arrays() {
+			assert_json(
+				"[[true, 0],[null]]",
+				Json::Array(vec![
+					Json::Array(vec![Json::Boolean(true), Json::Number(0.)]),
+					Json::Array(vec![Json::Null]),
+				]),
+			)
+		}
+	}
+
 	#[test]
 	fn test_trailing_value_returns_err() {
 		assert!(parse_json("true false").is_err());
+	}
+
+	fn assert_json(input: impl AsRef<str>, expected: Json) {
+		assert_eq!(parse_json(input), Ok(expected),)
 	}
 
 	fn assert_error(input: impl AsRef<str>, expected_cause: JsonParseErrorCause) {

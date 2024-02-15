@@ -33,10 +33,8 @@ impl<'a> Parser<'a> {
 
 		self.consume_whitespace();
 
-		if let Some(char) = self.peek() {
-			return Err(
-				self.create_error(JsonParseErrorCause::UnexpectedCharacter { char: char as char })
-			);
+		if self.peek().is_some() {
+			return Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter));
 		}
 
 		Ok(result)
@@ -48,9 +46,8 @@ impl<'a> Parser<'a> {
 			Some(b't') => self.parse_literal(b"true", Json::Boolean(true)),
 			Some(b'n') => self.parse_literal(b"null", Json::Null),
 			Some(b'-' | b'0'..=b'9') => self.parse_number(),
-			Some(c) => {
-				Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter { char: c as char }))
-			}
+			Some(b'"') => self.parse_string(),
+			Some(_) => Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter)),
 			None => Err(self.create_error(JsonParseErrorCause::UnexpectedEndOfFile)),
 		}
 	}
@@ -65,17 +62,17 @@ impl<'a> Parser<'a> {
 
 		self.consume_if(|ch| ch == b'-');
 
-		self.match_predicate(|ch| ch.is_ascii_digit())?;
+		self.match_digit()?;
 		self.consume_while(|ch| ch.is_ascii_digit());
 
-		if self.consume_if(|ch| ch == b'.') {
-			self.match_predicate(|ch| ch.is_ascii_digit())?;
+		if self.consume_if(|ch| ch == b'.').is_some() {
+			self.match_digit()?;
 			self.consume_while(|ch| ch.is_ascii_digit());
 		}
 
-		if self.consume_if(|ch| ch == b'e' || ch == b'E') {
+		if self.consume_if(|ch| ch == b'e' || ch == b'E').is_some() {
 			self.consume_if(|ch| ch == b'+' || ch == b'-');
-			self.match_predicate(|ch| ch.is_ascii_digit())?;
+			self.match_digit()?;
 			self.consume_while(|ch| ch.is_ascii_digit());
 		}
 
@@ -85,41 +82,106 @@ impl<'a> Parser<'a> {
 			.map_err(|_| self.create_error(JsonParseErrorCause::InvalidNumber))
 	}
 
+	fn parse_string(&mut self) -> Result {
+		fn parse_escape(parser: &mut Parser) -> Result<char> {
+			Ok(match parser.match_any()? {
+				b'"' => '"',
+				b'\\' => '\\',
+				b'/' => '/',
+				b'b' => '\u{08}',
+				b'f' => '\u{0C}',
+				b'n' => '\n',
+				b'r' => '\r',
+				b't' => '\t',
+				b'u' => {
+					/* TODO: surrogate pairs */
+					let mut code_point = 0u32;
+
+					for _ in 0..4 {
+						code_point *= 16;
+
+						let value = parse_hexdigit(parser.match_hexdigit()?);
+						code_point += value as u32;
+					}
+
+					char::from_u32(code_point).ok_or_else(|| {
+						parser.create_error(JsonParseErrorCause::InvalidUnicodeCodePoint {
+							value: code_point,
+						})
+					})?
+				}
+				_ => Err(parser.create_error(JsonParseErrorCause::BadEscapeCharacter))?,
+			})
+		}
+
+		let mut result = Vec::<u8>::new();
+		self.match_char(b'"')?;
+
+		while self.peek().is_some_and(|ch| ch != b'"' && ch != b'\n') {
+			if self.consume_if(|ch| ch == b'\\').is_some() {
+				let char = parse_escape(self)?;
+
+				let mut bytes = [0; 4];
+				char.encode_utf8(&mut bytes);
+				result.extend_from_slice(&bytes[..char.len_utf8()]);
+			} else {
+				result.push(self.match_any()?);
+			}
+		}
+
+		self.match_char(b'"')?;
+
+		let result = unsafe {
+			/* The input is a valid UTF-8 string, and we're only ending up here
+			 * if we matched a " character, which means the source bytes are
+			 * also valid UTF-8. */
+			String::from_utf8_unchecked(result)
+		};
+
+		Ok(Json::String(result))
+	}
+
 	fn peek(&self) -> Option<u8> {
 		self.source.as_bytes().get(self.index).copied()
 	}
 
-	fn match_predicate(&mut self, predicate: fn(u8) -> bool) -> Result<u8> {
-		match self.peek() {
-			Some(ch) if predicate(ch) => Ok(self.consume().unwrap()),
-			Some(ch) => {
-				Err(self
-					.create_error(JsonParseErrorCause::UnexpectedCharacter { char: ch as char }))
-			}
-			None => Err(self.create_error(JsonParseErrorCause::UnexpectedEndOfFile)),
-		}
+	fn peek_some(&self) -> Result<u8> {
+		self.peek()
+			.ok_or_else(|| self.create_error(JsonParseErrorCause::UnexpectedEndOfFile))
 	}
 
-	fn match_char(&mut self, expected: u8) -> Result<()> {
-		match self.peek() {
-			Some(ch) if ch == expected => {
-				self.consume().unwrap();
-				Ok(())
-			}
-			Some(ch) => {
-				let cause = JsonParseErrorCause::MismatchedCharacter {
-					expected: expected as char,
-					char: ch as char,
-				};
-				Err(self.create_error(cause))
-			}
-			None => {
-				let cause = JsonParseErrorCause::MismatchedEndOfFile {
-					expected: expected as char,
-				};
-				Err(self.create_error(cause))
-			}
-		}
+	fn match_any(&mut self) -> Result<u8> {
+		self.consume()
+			.ok_or_else(|| self.create_error(JsonParseErrorCause::UnexpectedEndOfFile))
+	}
+
+	fn match_if(&mut self, predicate: impl Fn(u8) -> bool) -> Result<u8> {
+		self.consume_if(predicate)
+			.ok_or_else(|| self.create_error(JsonParseErrorCause::UnexpectedCharacter))
+	}
+
+	fn match_digit(&mut self) -> Result<u8> {
+		self.match_if(|ch| ch.is_ascii_digit())
+			.map_err(|error| JsonParseError {
+				cause: JsonParseErrorCause::ExpectedDigit,
+				..error
+			})
+	}
+
+	fn match_hexdigit(&mut self) -> Result<u8> {
+		self.match_if(|ch| ch.is_ascii_hexdigit())
+			.map_err(|error| JsonParseError {
+				cause: JsonParseErrorCause::ExpectedHexadecimalDigit,
+				..error
+			})
+	}
+
+	fn match_char(&mut self, expected: u8) -> Result<u8> {
+		self.match_if(|ch| ch == expected)
+			.map_err(|error| JsonParseError {
+				cause: JsonParseErrorCause::MismatchedCharacter { expected },
+				..error
+			})
 	}
 
 	fn match_str(&mut self, expected: &[u8]) -> Result<()> {
@@ -145,17 +207,20 @@ impl<'a> Parser<'a> {
 		Some(peeked)
 	}
 
-	fn consume_if(&mut self, predicate: fn(u8) -> bool) -> bool {
+	fn consume_if(&mut self, predicate: impl Fn(u8) -> bool) -> Option<u8> {
 		if self.peek().is_some_and(predicate) {
-			self.consume();
-			true
+			self.consume()
 		} else {
-			false
+			None
 		}
 	}
 
 	fn consume_while(&mut self, predicate: fn(u8) -> bool) {
-		while self.consume_if(predicate) {}
+		loop {
+			if self.consume_if(predicate).is_none() {
+				break;
+			}
+		}
 	}
 
 	fn consume_whitespace(&mut self) {
@@ -164,10 +229,20 @@ impl<'a> Parser<'a> {
 
 	fn create_error(&self, cause: JsonParseErrorCause) -> JsonParseError {
 		JsonParseError {
+			index: self.index,
 			row: self.row,
 			column: self.column,
 			cause,
 		}
+	}
+}
+
+fn parse_hexdigit(digit: u8) -> u8 {
+	match digit {
+		b'0'..=b'9' => digit - b'0',
+		b'A'..=b'F' => digit - b'A' + 10,
+		b'a'..=b'f' => digit - b'a' + 10,
+		_ => panic!("Not a hexdigit: {digit}"),
 	}
 }
 
@@ -250,9 +325,77 @@ mod tests {
 		}
 	}
 
+	mod string {
+		use super::*;
+
+		#[test]
+		fn test_parse_string() {
+			assert_string(r#""""#, "");
+			assert_string(r#""a""#, "a");
+			assert_string(r#""abc""#, "abc");
+		}
+
+		#[test]
+		fn test_newline_in_string_returns_error() {
+			assert_error(
+				"\"abc\ndef\"",
+				JsonParseErrorCause::MismatchedCharacter { expected: b'"' },
+			);
+		}
+
+		#[test]
+		fn test_parse_escape_characters() {
+			for (escape, char) in [
+				('"', '"'),
+				('\\', '\\'),
+				('/', '/'),
+				('b', '\u{08}'),
+				('f', '\u{0C}'),
+				('n', '\n'),
+				('r', '\r'),
+				('t', '\t'),
+			] {
+				assert_eq!(
+					parse_json(format!("\"\\{escape}\"")),
+					Ok(Json::String(format!("{char}"))),
+					"Escape sequence: \\{escape}",
+				);
+			}
+		}
+
+		#[test]
+		fn test_unicode_escape() {
+			assert_string(r#""\u000A""#, "\n");
+			assert_string(r#""\u00DF""#, "ß");
+			assert_string(r#""\u03BB""#, "λ");
+		}
+
+		#[test]
+		fn test_bad_escape_char() {
+			assert_error(r#""\q""#, JsonParseErrorCause::BadEscapeCharacter)
+		}
+
+		fn assert_string(input: impl AsRef<str>, str: &str) {
+			assert_eq!(parse_json(input), Ok(Json::String(String::from(str))),)
+		}
+	}
+
 	#[test]
 	fn test_trailing_value_returns_err() {
 		assert!(parse_json("true false").is_err());
+	}
+
+	fn assert_error(input: impl AsRef<str>, expected_cause: JsonParseErrorCause) {
+		let result = parse_json(input);
+		match result {
+			Err(JsonParseError { cause, .. }) if cause == expected_cause => {
+				/* Expected result */
+			}
+			Ok(_) => panic!("Expected Err with cause {expected_cause:?}, but was {result:?}"),
+			Err(JsonParseError { cause, .. }) => {
+				panic!("Expected Err with cause {expected_cause:?}, but had cause {cause:?}")
+			}
+		}
 	}
 
 	fn generate_whitespace(length: usize) -> String {

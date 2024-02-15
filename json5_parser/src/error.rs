@@ -4,6 +4,7 @@ use std::{error::Error, fmt::Display};
 pub struct JsonParseError {
 	pub cause: JsonParseErrorCause,
 
+	pub index: usize,
 	pub row: usize,
 	pub column: usize,
 }
@@ -18,33 +19,43 @@ impl Error for JsonParseError {}
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum JsonParseErrorCause {
-	MismatchedCharacter { char: char, expected: char },
-	UnexpectedCharacter { char: char },
-	MismatchedEndOfFile { expected: char },
+	MismatchedCharacter { expected: u8 },
+	UnexpectedCharacter,
 	UnexpectedEndOfFile,
 	InvalidNumber,
+	BadEscapeCharacter,
+	ExpectedDigit,
+	ExpectedHexadecimalDigit,
+	InvalidUnicodeCodePoint { value: u32 },
 }
 
 impl Display for JsonParseErrorCause {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		use JsonParseErrorCause as E;
 		match self {
-			JsonParseErrorCause::MismatchedCharacter { expected, char } => {
-				write!(
-					f,
-					"Unexpected character: expected '{expected}' but got '{char}'"
-				)
+			E::MismatchedCharacter { expected } => {
+				write!(f, "Mismatched character, expected '{}'", *expected as char)
 			}
-			JsonParseErrorCause::UnexpectedCharacter { char } => {
-				write!(f, "Unexpected character: '{char}'")
+			E::UnexpectedCharacter => {
+				write!(f, "Unexpected character")
 			}
-			JsonParseErrorCause::MismatchedEndOfFile { expected } => {
-				write!(f, "Unexpected end of file: expected '{expected}'")
-			}
-			JsonParseErrorCause::UnexpectedEndOfFile => {
+			E::UnexpectedEndOfFile => {
 				write!(f, "Unexpected end of file")
 			}
-			JsonParseErrorCause::InvalidNumber => {
+			E::InvalidNumber => {
 				write!(f, "Invalid number")
+			}
+			E::BadEscapeCharacter => {
+				write!(f, "Bad escape sequence")
+			}
+			E::ExpectedDigit => {
+				write!(f, "Expected digit")
+			}
+			E::ExpectedHexadecimalDigit => {
+				write!(f, "Expected hexadecimal digit")
+			}
+			E::InvalidUnicodeCodePoint { value } => {
+				write!(f, "Invalid Unicode code point value: {value}")
 			}
 		}
 	}

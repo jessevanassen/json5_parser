@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{error::JsonParseErrorCause, Json, JsonParseError};
 
 const WHITESPACE_CHARACTERS: [u8; 4] = [b' ', b'\n', b'\t', b'\r'];
@@ -48,6 +50,7 @@ impl<'a> Parser<'a> {
 			b'-' | b'0'..=b'9' => self.parse_number(),
 			b'"' => self.parse_string(),
 			b'[' => self.parse_array(),
+			b'{' => self.parse_object(),
 			_ => Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter)),
 		}
 	}
@@ -164,6 +167,39 @@ impl<'a> Parser<'a> {
 		self.match_char(b']')?;
 
 		Ok(Json::Array(content))
+	}
+
+	fn parse_object(&mut self) -> Result {
+		self.match_char(b'{')?;
+		self.consume_whitespace();
+
+		let mut entries = HashMap::<String, Json>::new();
+
+		if self.peek_some()? != b'}' {
+			loop {
+				let Json::String(key) = self.parse_string()? else {
+					unreachable!()
+				};
+				self.consume_whitespace();
+				self.match_char(b':')?;
+				self.consume_whitespace();
+				let value = self.parse_value()?;
+				self.consume_whitespace();
+
+				entries.insert(key, value);
+
+				if self.peek_some()? == b'}' {
+					break;
+				}
+
+				self.match_char(b',')?;
+				self.consume_whitespace()
+			}
+		}
+
+		self.match_char(b'}')?;
+
+		Ok(Json::Object(entries))
 	}
 
 	fn peek(&self) -> Option<u8> {
@@ -410,7 +446,7 @@ mod tests {
 
 		#[test]
 		fn test_parse_empty_array() {
-			assert_json("[]", Json::Array(Vec::new()));
+			assert_json("[]", Json::Array(Default::default()));
 		}
 
 		#[test]
@@ -430,6 +466,36 @@ mod tests {
 					Json::Array(vec![Json::Null]),
 				]),
 			)
+		}
+	}
+
+	mod object {
+		use super::*;
+		use std::collections::HashMap;
+
+		#[test]
+		fn test_parse_empty_object() {
+			assert_json("{}", Json::Object(Default::default()));
+		}
+
+		#[test]
+		fn test_parse_object_with_primitives() {
+			let mut entries = HashMap::new();
+			entries.insert(String::from("first"), Json::Boolean(true));
+			entries.insert(String::from("second"), Json::Number(0.));
+
+			assert_json(r#"{ "first": true, "second": 0 }"#, Json::Object(entries))
+		}
+
+		#[test]
+		fn test_parse_nested_object() {
+			let mut leaf = HashMap::new();
+			leaf.insert(String::from("second"), Json::Number(0.));
+
+			let mut root = HashMap::new();
+			root.insert(String::from("first"), Json::Object(leaf));
+
+			assert_json(r#"{ "first": {"second":0} }"#, Json::Object(root))
 		}
 	}
 

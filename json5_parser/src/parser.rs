@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
-use crate::{error::JsonParseErrorCause, Json, JsonParseError};
+use crate::{error::JsonParseErrorCause, JsonParseError};
+use serde_json::Value as Json;
 
 const WHITESPACE_CHARACTERS: [u8; 4] = [b' ', b'\n', b'\t', b'\r'];
 
@@ -44,8 +43,8 @@ impl<'a> Parser<'a> {
 
 	fn parse_value(&mut self) -> Result {
 		match self.peek_some()? {
-			b'f' => self.parse_literal(b"false", Json::Boolean(false)),
-			b't' => self.parse_literal(b"true", Json::Boolean(true)),
+			b'f' => self.parse_literal(b"false", Json::Bool(false)),
+			b't' => self.parse_literal(b"true", Json::Bool(true)),
 			b'n' => self.parse_literal(b"null", Json::Null),
 			b'-' | b'0'..=b'9' => self.parse_number(),
 			b'"' => self.parse_string(),
@@ -80,8 +79,8 @@ impl<'a> Parser<'a> {
 		}
 
 		self.source[start..self.index]
-			.parse()
-			.map(Json::Number)
+			.parse::<f64>()
+			.map(number)
 			.map_err(|_| self.create_error(JsonParseErrorCause::InvalidNumber))
 	}
 
@@ -173,7 +172,7 @@ impl<'a> Parser<'a> {
 		self.match_char(b'{')?;
 		self.consume_whitespace();
 
-		let mut entries = HashMap::<String, Json>::new();
+		let mut entries = serde_json::Map::new();
 
 		if self.peek_some()? != b'}' {
 			loop {
@@ -307,6 +306,10 @@ fn parse_hexdigit(digit: u8) -> u8 {
 	}
 }
 
+fn number(n: f64) -> Json {
+	serde_json::Number::from_f64(n).unwrap().into()
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -316,12 +319,12 @@ mod tests {
 
 		#[test]
 		fn test_parse_false() {
-			test_parse_literal_value(Json::Boolean(false), "false");
+			test_parse_literal_value(Json::Bool(false), "false");
 		}
 
 		#[test]
 		fn test_parse_true() {
-			test_parse_literal_value(Json::Boolean(true), "true");
+			test_parse_literal_value(Json::Bool(true), "true");
 		}
 
 		#[test]
@@ -346,29 +349,29 @@ mod tests {
 
 		#[test]
 		fn test_positive_integer() {
-			assert_eq!(parse_json("0"), Ok(Json::Number(0.)));
-			assert_eq!(parse_json("12345"), Ok(Json::Number(12345.)));
+			assert_eq!(parse_json("0"), Ok(number(0.)));
+			assert_eq!(parse_json("12345"), Ok(number(12345.)));
 		}
 
 		#[test]
 		fn test_negative_integer() {
 			assert!(parse_json("-").is_err());
-			assert_eq!(parse_json("-1"), Ok(Json::Number(-1.)));
-			assert_eq!(parse_json("-12345"), Ok(Json::Number(-12345.)));
+			assert_eq!(parse_json("-1"), Ok(number(-1.)));
+			assert_eq!(parse_json("-12345"), Ok(number(-12345.)));
 		}
 
 		#[test]
 		fn test_positive_floats() {
 			assert!(parse_json("0.").is_err());
-			assert_eq!(parse_json("1.5"), Ok(Json::Number(1.5)));
-			assert_eq!(parse_json("123.25"), Ok(Json::Number(123.25)));
+			assert_eq!(parse_json("1.5"), Ok(number(1.5)));
+			assert_eq!(parse_json("123.25"), Ok(number(123.25)));
 		}
 
 		#[test]
 		fn test_negative_floats() {
 			assert!(parse_json("-0.").is_err());
-			assert_eq!(parse_json("-1.5"), Ok(Json::Number(-1.5)));
-			assert_eq!(parse_json("-123.25"), Ok(Json::Number(-123.25)));
+			assert_eq!(parse_json("-1.5"), Ok(number(-1.5)));
+			assert_eq!(parse_json("-123.25"), Ok(number(-123.25)));
 		}
 
 		#[test]
@@ -377,12 +380,12 @@ mod tests {
 				assert!(parse_json(input).is_err());
 			}
 
-			assert_eq!(parse_json("1e3"), Ok(Json::Number(1000.)));
-			assert_eq!(parse_json("1E3"), Ok(Json::Number(1000.)));
-			assert_eq!(parse_json("1e+3"), Ok(Json::Number(1000.)));
-			assert_eq!(parse_json("1E+3"), Ok(Json::Number(1000.)));
-			assert_eq!(parse_json("5e-1"), Ok(Json::Number(0.5)));
-			assert_eq!(parse_json("5E-1"), Ok(Json::Number(0.5)));
+			assert_eq!(parse_json("1e3"), Ok(number(1000.)));
+			assert_eq!(parse_json("1E3"), Ok(number(1000.)));
+			assert_eq!(parse_json("1e+3"), Ok(number(1000.)));
+			assert_eq!(parse_json("1E+3"), Ok(number(1000.)));
+			assert_eq!(parse_json("5e-1"), Ok(number(0.5)));
+			assert_eq!(parse_json("5E-1"), Ok(number(0.5)));
 		}
 	}
 
@@ -453,7 +456,7 @@ mod tests {
 		fn test_parse_array_with_primitives() {
 			assert_json(
 				"[true, 0,null]",
-				Json::Array(vec![Json::Boolean(true), Json::Number(0.), Json::Null]),
+				Json::Array(vec![Json::Bool(true), number(0.), Json::Null]),
 			)
 		}
 
@@ -462,7 +465,7 @@ mod tests {
 			assert_json(
 				"[[true, 0],[null]]",
 				Json::Array(vec![
-					Json::Array(vec![Json::Boolean(true), Json::Number(0.)]),
+					Json::Array(vec![Json::Bool(true), number(0.)]),
 					Json::Array(vec![Json::Null]),
 				]),
 			)
@@ -471,7 +474,6 @@ mod tests {
 
 	mod object {
 		use super::*;
-		use std::collections::HashMap;
 
 		#[test]
 		fn test_parse_empty_object() {
@@ -480,19 +482,19 @@ mod tests {
 
 		#[test]
 		fn test_parse_object_with_primitives() {
-			let mut entries = HashMap::new();
-			entries.insert(String::from("first"), Json::Boolean(true));
-			entries.insert(String::from("second"), Json::Number(0.));
+			let mut entries = serde_json::Map::new();
+			entries.insert(String::from("first"), Json::Bool(true));
+			entries.insert(String::from("second"), number(0.));
 
 			assert_json(r#"{ "first": true, "second": 0 }"#, Json::Object(entries))
 		}
 
 		#[test]
 		fn test_parse_nested_object() {
-			let mut leaf = HashMap::new();
-			leaf.insert(String::from("second"), Json::Number(0.));
+			let mut leaf = serde_json::Map::new();
+			leaf.insert(String::from("second"), number(0.));
 
-			let mut root = HashMap::new();
+			let mut root = serde_json::Map::new();
 			root.insert(String::from("first"), Json::Object(leaf));
 
 			assert_json(r#"{ "first": {"second":0} }"#, Json::Object(root))

@@ -5,5 +5,8 @@ edition = "2021"
 rust-version = "1.76"
 publish = false
 
+[dependencies]
+serde_json = "1.0.113"
+
 [dev-dependencies]
 rand = "0.8.5"

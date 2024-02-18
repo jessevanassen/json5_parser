@@ -46,7 +46,7 @@ impl<'a> Parser<'a> {
 			b'f' => self.parse_literal(b"false", Json::Bool(false)),
 			b't' => self.parse_literal(b"true", Json::Bool(true)),
 			b'n' => self.parse_literal(b"null", Json::Null),
-			b'-' | b'0'..=b'9' => self.parse_number(),
+			b'+' | b'-' | b'0'..=b'9' => self.parse_number(),
 			b'"' | b'\'' => self.parse_string(),
 			b'[' => self.parse_array(),
 			b'{' => self.parse_object(),
@@ -62,7 +62,7 @@ impl<'a> Parser<'a> {
 	fn parse_number(&mut self) -> Result {
 		let start = self.index;
 
-		self.consume_if(|ch| ch == b'-');
+		self.consume_if(|ch| ch == b'-' || ch == b'+');
 
 		self.match_digit()?;
 		self.consume_while(|ch| ch.is_ascii_digit());
@@ -412,7 +412,9 @@ fn parse_hexdigit(digit: u8) -> u8 {
 }
 
 fn number(n: f64) -> Json {
-	serde_json::Number::from_f64(n).unwrap().into()
+	serde_json::Number::from_f64(n)
+		.expect("Not a valid serde_json::Number")
+		.into()
 }
 
 #[cfg(test)]

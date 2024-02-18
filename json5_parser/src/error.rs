@@ -11,7 +11,7 @@ pub struct JsonParseError {
 
 impl Display for JsonParseError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{}:{} {}", self.row + 1, self.column + 1, self.cause)
+		write!(f, "{} (line {}, column {})", self.cause, self.row + 1, self.column + 1)
 	}
 }
 

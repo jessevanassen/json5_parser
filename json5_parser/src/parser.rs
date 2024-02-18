@@ -180,7 +180,7 @@ impl<'a> Parser<'a> {
 
 		if self.peek_some()? != b'}' {
 			loop {
-				let Json::String(key) = self.parse_string()? else {
+				let Json::String(key) = self.parse_key()? else {
 					unreachable!()
 				};
 				self.consume_ignorables()?;
@@ -208,6 +208,28 @@ impl<'a> Parser<'a> {
 
 		Ok(Json::Object(entries))
 	}
+
+	fn parse_key(&mut self) -> Result {
+		fn parse_identifier(parser: &mut Parser) -> Result {
+			fn is_identifier_symbol(ch: u8) -> bool {
+				matches!(ch, b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'$')
+			}
+
+			let start = parser.index;
+			parser.match_if(is_identifier_symbol)?;
+			parser.consume_while(|ch| is_identifier_symbol(ch) || ch.is_ascii_digit());
+
+			let identifier = parser.source[start..parser.index].to_string();
+			Ok(Json::String(identifier))
+		}
+
+		if let identifier @ Ok(_) = parse_identifier(self) {
+			identifier
+		} else {
+			self.parse_string()
+		}
+	}
+
 
 	/// Things that don't contribute to the actual value, like comments and
 	/// whitespace.
@@ -580,6 +602,34 @@ mod tests {
 			root.insert(String::from("first"), Json::Object(leaf));
 
 			assert_json(r#"{ "first": {"second":0} }"#, Json::Object(root))
+		}
+
+		#[test]
+		fn test_js_name_as_key() {
+			fn input(key: &str) -> String {
+				format!(r"{{ {key}: null }}")
+			}
+
+			fn test(key: &str) {
+				let mut entries = serde_json::Map::new();
+				entries.insert(String::from(key), Json::Null);
+				let expected = Json::Object(entries);
+
+				assert_json(input(key), expected);
+			}
+
+			test("a");
+			test("Z");
+			test("$");
+			test("_");
+			test("_1");
+			test("aBcD");
+			test("AbCd");
+			test("_123abc$");
+
+			assert!(parse_json(input("1")).is_err());
+			assert!(parse_json(input("123")).is_err());
+			assert!(parse_json(input("1x")).is_err());
 		}
 
 		#[test]

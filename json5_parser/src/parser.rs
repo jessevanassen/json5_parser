@@ -94,7 +94,7 @@ impl<'a> Parser<'a> {
 				b'b' => '\u{08}',
 				b'f' => '\u{0C}',
 				b'n' | b'\n' => '\n',
-				b'r' => '\r',
+				b'r' | b'\r' => '\r',
 				b't' => '\t',
 				b'u' => {
 					/* TODO: surrogate pairs */
@@ -120,13 +120,23 @@ impl<'a> Parser<'a> {
 		let mut result = Vec::<u8>::new();
 		let quote_style = self.match_if(|ch| ch == b'"' || ch == b'\'')?;
 
-		while self.peek().is_some_and(|ch| ch != quote_style && ch != b'\n') {
+		while self
+			.peek()
+			.is_some_and(|ch| ch != quote_style && ch != b'\n')
+		{
 			if self.consume_if(|ch| ch == b'\\').is_some() {
-				let char = parse_escape(self)?;
+				if self.consume_str(b"\r\n") {
+					/* Exceptional case: a single `\` in front of a \r\n
+					 * sequence escapes both the \r and \n characters. ` */
+					result.push(b'\r');
+					result.push(b'\n');
+				} else {
+					let char = parse_escape(self)?;
 
-				let mut bytes = [0; 4];
-				char.encode_utf8(&mut bytes);
-				result.extend_from_slice(&bytes[..char.len_utf8()]);
+					let mut bytes = [0; 4];
+					char.encode_utf8(&mut bytes);
+					result.extend_from_slice(&bytes[..char.len_utf8()]);
+				}
 			} else {
 				result.push(self.match_any()?);
 			}
@@ -231,7 +241,6 @@ impl<'a> Parser<'a> {
 		}
 	}
 
-
 	/// Things that don't contribute to the actual value, like comments and
 	/// whitespace.
 	fn consume_ignorables(&mut self) -> Result<()> {
@@ -242,7 +251,8 @@ impl<'a> Parser<'a> {
 		fn consume_comments(parser: &mut Parser) -> Result<()> {
 			fn consume_single_line_comment(parser: &mut Parser) -> Result<()> {
 				parser.match_str(b"//")?;
-				parser.consume_while(|ch| ch != b'\n');
+				parser.consume_while(|ch| ch != b'\r' && ch != b'\n');
+				parser.consume_if(|ch| ch == b'\r');
 				parser.consume_if(|ch| ch == b'\n');
 				Ok(())
 			}
@@ -291,6 +301,13 @@ impl<'a> Parser<'a> {
 	fn peek_some(&self) -> Result<u8> {
 		self.peek()
 			.ok_or_else(|| self.create_error(JsonParseErrorCause::UnexpectedEndOfFile))
+	}
+
+	fn peek_str(&self, str: &[u8]) -> bool {
+		str.iter()
+			.copied()
+			.enumerate()
+			.all(|(i, ch)| self.peek_n(i) == Some(ch))
 	}
 
 	fn match_any(&mut self) -> Result<u8> {
@@ -363,6 +380,15 @@ impl<'a> Parser<'a> {
 			if self.consume_if(predicate).is_none() {
 				break;
 			}
+		}
+	}
+
+	fn consume_str(&mut self, str: &[u8]) -> bool {
+		if self.peek_str(str) {
+			self.index += str.len();
+			true
+		} else {
+			false
 		}
 	}
 
@@ -654,10 +680,7 @@ mod tests {
 
 		#[test]
 		fn test_bare_comma() {
-			assert_error(
-				"{, }",
-				JsonParseErrorCause::UnexpectedCharacter,
-			);
+			assert_error("{, }", JsonParseErrorCause::UnexpectedCharacter);
 		}
 
 		#[test]

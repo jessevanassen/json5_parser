@@ -92,7 +92,7 @@ impl<'a> Parser<'a> {
 				b'/' => '/',
 				b'b' => '\u{08}',
 				b'f' => '\u{0C}',
-				b'n' => '\n',
+				b'n' | b'\n' => '\n',
 				b'r' => '\r',
 				b't' => '\t',
 				b'u' => {
@@ -475,6 +475,11 @@ mod tests {
 			assert_string(r#""""#, "");
 			assert_string(r#""a""#, "a");
 			assert_string(r#""abc""#, "abc");
+		}
+
+		#[test]
+		fn test_parse_multiline_string() {
+			assert_string("\"Line 1\\\nLine 2\"", "Line 1\nLine 2");
 		}
 
 		#[test]

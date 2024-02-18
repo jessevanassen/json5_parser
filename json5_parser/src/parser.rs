@@ -28,11 +28,11 @@ impl<'a> Parser<'a> {
 	}
 
 	pub fn parse(&mut self) -> Result {
-		self.consume_whitespace();
+		self.consume_ignorables()?;
 
 		let result = self.parse_value()?;
 
-		self.consume_whitespace();
+		self.consume_ignorables()?;
 
 		if self.peek().is_some() {
 			return Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter));
@@ -145,21 +145,21 @@ impl<'a> Parser<'a> {
 
 	fn parse_array(&mut self) -> Result {
 		self.match_char(b'[')?;
-		self.consume_whitespace();
+		self.consume_ignorables()?;
 
 		let mut content = Vec::<Json>::new();
 
 		if self.peek_some()? != b']' {
 			loop {
 				content.push(self.parse_value()?);
-				self.consume_whitespace();
+				self.consume_ignorables()?;
 
 				if self.peek_some()? == b']' {
 					break;
 				}
 
 				self.match_char(b',')?;
-				self.consume_whitespace();
+				self.consume_ignorables()?;
 
 				if self.peek_some()? == b']' {
 					break;
@@ -174,7 +174,7 @@ impl<'a> Parser<'a> {
 
 	fn parse_object(&mut self) -> Result {
 		self.match_char(b'{')?;
-		self.consume_whitespace();
+		self.consume_ignorables()?;
 
 		let mut entries = serde_json::Map::new();
 
@@ -183,11 +183,11 @@ impl<'a> Parser<'a> {
 				let Json::String(key) = self.parse_string()? else {
 					unreachable!()
 				};
-				self.consume_whitespace();
+				self.consume_ignorables()?;
 				self.match_char(b':')?;
-				self.consume_whitespace();
+				self.consume_ignorables()?;
 				let value = self.parse_value()?;
-				self.consume_whitespace();
+				self.consume_ignorables()?;
 
 				entries.insert(key, value);
 
@@ -196,7 +196,7 @@ impl<'a> Parser<'a> {
 				}
 
 				self.match_char(b',')?;
-				self.consume_whitespace();
+				self.consume_ignorables()?;
 
 				if self.peek_some()? == b'}' {
 					break;
@@ -209,8 +209,60 @@ impl<'a> Parser<'a> {
 		Ok(Json::Object(entries))
 	}
 
+	/// Things that don't contribute to the actual value, like comments and
+	/// whitespace.
+	fn consume_ignorables(&mut self) -> Result<()> {
+		fn consume_whitespace(parser: &mut Parser) {
+			parser.consume_while(|ch| WHITESPACE_CHARACTERS.contains(&ch));
+		}
+
+		fn consume_comments(parser: &mut Parser) -> Result<()> {
+			fn consume_single_line_comment(parser: &mut Parser) -> Result<()> {
+				parser.match_str(b"//")?;
+				parser.consume_while(|ch| ch != b'\n');
+				parser.consume_if(|ch| ch == b'\n');
+				Ok(())
+			}
+
+			fn consume_multi_line_comment(parser: &mut Parser) -> Result<()> {
+				parser.match_str(b"/*")?;
+
+				while !matches!(
+					(parser.peek_n(0), parser.peek_n(1)),
+					(Some(b'*'), Some(b'/'))
+				) {
+					parser.match_any()?;
+				}
+
+				parser.match_str(b"*/")?;
+				Ok(())
+			}
+
+			loop {
+				match (parser.peek_n(0), parser.peek_n(1)) {
+					(Some(b'/'), Some(b'/')) => consume_single_line_comment(parser)?,
+					(Some(b'/'), Some(b'*')) => consume_multi_line_comment(parser)?,
+					_ => {
+						return Ok(());
+					}
+				}
+				consume_whitespace(parser);
+			}
+		}
+
+		consume_whitespace(self);
+		consume_comments(self)?;
+
+		Ok(())
+	}
+
 	fn peek(&self) -> Option<u8> {
-		self.source.as_bytes().get(self.index).copied()
+		self.peek_n(0)
+	}
+
+	/// Peek n characters ahead.
+	fn peek_n(&self, n: usize) -> Option<u8> {
+		self.source.as_bytes().get(self.index + n).copied()
 	}
 
 	fn peek_some(&self) -> Result<u8> {
@@ -289,10 +341,6 @@ impl<'a> Parser<'a> {
 				break;
 			}
 		}
-	}
-
-	fn consume_whitespace(&mut self) {
-		self.consume_while(|ch| WHITESPACE_CHARACTERS.contains(&ch));
 	}
 
 	fn create_error(&self, cause: JsonParseErrorCause) -> JsonParseError {
@@ -483,35 +531,26 @@ mod tests {
 		fn test_no_separator() {
 			assert_error(
 				"[true false]",
-				JsonParseErrorCause::MismatchedCharacter { expected: b',' }
+				JsonParseErrorCause::MismatchedCharacter { expected: b',' },
 			)
 		}
 
 		#[test]
 		fn test_bare_comma() {
-			assert_error(
-				"[, ]",
-				JsonParseErrorCause::UnexpectedCharacter,
-			);
+			assert_error("[, ]", JsonParseErrorCause::UnexpectedCharacter);
 		}
 
 		#[test]
 		fn test_trailing_comma() {
 			assert_json(
 				"[true, false, ]",
-				Json::Array(vec![
-					true.into(),
-					false.into(),
-				])
+				Json::Array(vec![true.into(), false.into()]),
 			);
 		}
 
 		#[test]
 		fn test_multiple_trailing_commas() {
-			assert_error(
-				"[true, false,, ]",
-				JsonParseErrorCause::UnexpectedCharacter,
-			);
+			assert_error("[true, false,, ]", JsonParseErrorCause::UnexpectedCharacter);
 		}
 	}
 
@@ -608,5 +647,85 @@ mod tests {
 			})
 			.collect();
 		String::from_utf8(chars).unwrap()
+	}
+
+	mod comments {
+		use super::*;
+
+		#[test]
+		fn comments_at_start() {
+			assert_json("// This is a bool\nfalse", Json::Bool(false));
+			assert_json("/* This is a bool */ false", Json::Bool(false));
+			assert_json("/**\n * This is a bool\n **/\nfalse", Json::Bool(false));
+		}
+
+		#[test]
+		fn comments_at_end() {
+			assert_json("false // This is a bool\n", Json::Bool(false));
+			assert_json("false /* This was a bool */", Json::Bool(false));
+			assert_json("false /**\n * This was a bool\n **/\n", Json::Bool(false));
+		}
+
+		#[test]
+		fn repeated_comments() {
+			assert_json(
+				"// This is a bool\n// This is a bool\nfalse",
+				Json::Bool(false),
+			);
+			assert_json(
+				"/* This is a bool */\n/* This is a bool *//* This is a bool */ false",
+				Json::Bool(false),
+			);
+
+			assert_json(
+				"false // This is a bool\n// This is a bool\n",
+				Json::Bool(false),
+			);
+			assert_json(
+				"false /* This is a bool */\n/* This is a bool *//* This is a bool */",
+				Json::Bool(false),
+			);
+		}
+
+		#[test]
+		fn comment_within_array() {
+			let expected = Json::Array(vec![Json::Bool(true), Json::Bool(false)]);
+			assert_json("[/* null, */ true, false ]", expected.clone());
+			assert_json("[true, /* null, */ false ]", expected.clone());
+			assert_json("[true, false, /* null */ ]", expected.clone());
+		}
+
+		#[test]
+		fn comment_within_object() {
+			let mut entries = serde_json::Map::new();
+			entries.insert(String::from("first"), Json::Bool(true));
+			entries.insert(String::from("second"), number(0.));
+			let expected = Json::Object(entries);
+
+			assert_json(
+				r#"{ /* null, */ "first": true, "second": 0 }"#,
+				expected.clone(),
+			);
+			assert_json(
+				r#"{ "first": true, /* null, */ "second": 0 }"#,
+				expected.clone(),
+			);
+			assert_json(
+				r#"{ "first": true, "second": 0 /* null, */ }"#,
+				expected.clone(),
+			);
+		}
+
+		#[test]
+		fn unfinished_multiline_comment() {
+			assert_error(
+				"false /* Not closing!",
+				JsonParseErrorCause::UnexpectedEndOfFile,
+			);
+			assert_error(
+				"false /* Still\n * not\n *closing!",
+				JsonParseErrorCause::UnexpectedEndOfFile,
+			);
+		}
 	}
 }

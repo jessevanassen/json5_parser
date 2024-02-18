@@ -47,7 +47,7 @@ impl<'a> Parser<'a> {
 			b't' => self.parse_literal(b"true", Json::Bool(true)),
 			b'n' => self.parse_literal(b"null", Json::Null),
 			b'-' | b'0'..=b'9' => self.parse_number(),
-			b'"' => self.parse_string(),
+			b'"' | b'\'' => self.parse_string(),
 			b'[' => self.parse_array(),
 			b'{' => self.parse_object(),
 			_ => Err(self.create_error(JsonParseErrorCause::UnexpectedCharacter)),
@@ -88,6 +88,7 @@ impl<'a> Parser<'a> {
 		fn parse_escape(parser: &mut Parser) -> Result<char> {
 			Ok(match parser.match_any()? {
 				b'"' => '"',
+				b'\'' => '\'',
 				b'\\' => '\\',
 				b'/' => '/',
 				b'b' => '\u{08}',
@@ -117,9 +118,9 @@ impl<'a> Parser<'a> {
 		}
 
 		let mut result = Vec::<u8>::new();
-		self.match_char(b'"')?;
+		let quote_style = self.match_if(|ch| ch == b'"' || ch == b'\'')?;
 
-		while self.peek().is_some_and(|ch| ch != b'"' && ch != b'\n') {
+		while self.peek().is_some_and(|ch| ch != quote_style && ch != b'\n') {
 			if self.consume_if(|ch| ch == b'\\').is_some() {
 				let char = parse_escape(self)?;
 
@@ -131,7 +132,7 @@ impl<'a> Parser<'a> {
 			}
 		}
 
-		self.match_char(b'"')?;
+		self.match_char(quote_style)?;
 
 		let result = unsafe {
 			/* The input is a valid UTF-8 string, and we're only ending up here
@@ -494,6 +495,7 @@ mod tests {
 		fn test_parse_escape_characters() {
 			for (escape, char) in [
 				('"', '"'),
+				('\'', '\''),
 				('\\', '\\'),
 				('/', '/'),
 				('b', '\u{08}'),
@@ -520,6 +522,11 @@ mod tests {
 		#[test]
 		fn test_bad_escape_char() {
 			assert_error(r#""\q""#, JsonParseErrorCause::BadEscapeCharacter)
+		}
+
+		#[test]
+		fn test_single_quoted_string() {
+			assert_string("'hello'", "hello");
 		}
 
 		fn assert_string(input: impl AsRef<str>, str: &str) {
@@ -649,7 +656,7 @@ mod tests {
 		fn test_bare_comma() {
 			assert_error(
 				"{, }",
-				JsonParseErrorCause::MismatchedCharacter { expected: b'"' },
+				JsonParseErrorCause::UnexpectedCharacter,
 			);
 		}
 
@@ -666,7 +673,7 @@ mod tests {
 		fn test_multiple_trailing_commas() {
 			assert_error(
 				r#"{ "first": true,, }"#,
-				JsonParseErrorCause::MismatchedCharacter { expected: b'"' },
+				JsonParseErrorCause::UnexpectedCharacter,
 			);
 		}
 	}

@@ -46,7 +46,7 @@ impl<'a> Parser<'a> {
 			b'f' => self.parse_literal(b"false", Json::Bool(false)),
 			b't' => self.parse_literal(b"true", Json::Bool(true)),
 			b'n' => self.parse_literal(b"null", Json::Null),
-			b'+' | b'-' | b'0'..=b'9' => self.parse_number(),
+			b'0'..=b'9' | b'-' | b'+' | b'.' => self.parse_number(),
 			b'"' | b'\'' => self.parse_string(),
 			b'[' => self.parse_array(),
 			b'{' => self.parse_object(),
@@ -64,11 +64,9 @@ impl<'a> Parser<'a> {
 
 		self.consume_if(|ch| ch == b'-' || ch == b'+');
 
-		self.match_digit()?;
 		self.consume_while(|ch| ch.is_ascii_digit());
 
 		if self.consume_if(|ch| ch == b'.').is_some() {
-			self.match_digit()?;
 			self.consume_while(|ch| ch.is_ascii_digit());
 		}
 
@@ -469,14 +467,14 @@ mod tests {
 
 		#[test]
 		fn test_positive_floats() {
-			assert!(parse_json("0.").is_err());
+			assert_eq!(parse_json("0."), Ok(number(0.0)));
 			assert_eq!(parse_json("1.5"), Ok(number(1.5)));
 			assert_eq!(parse_json("123.25"), Ok(number(123.25)));
 		}
 
 		#[test]
 		fn test_negative_floats() {
-			assert!(parse_json("-0.").is_err());
+			assert_eq!(parse_json("-0."), Ok(number(-0.0)));
 			assert_eq!(parse_json("-1.5"), Ok(number(-1.5)));
 			assert_eq!(parse_json("-123.25"), Ok(number(-123.25)));
 		}

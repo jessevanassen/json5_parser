@@ -159,7 +159,11 @@ impl<'a> Parser<'a> {
 				}
 
 				self.match_char(b',')?;
-				self.consume_whitespace()
+				self.consume_whitespace();
+
+				if self.peek_some()? == b']' {
+					break;
+				}
 			}
 		}
 
@@ -192,7 +196,11 @@ impl<'a> Parser<'a> {
 				}
 
 				self.match_char(b',')?;
-				self.consume_whitespace()
+				self.consume_whitespace();
+
+				if self.peek_some()? == b'}' {
+					break;
+				}
 			}
 		}
 
@@ -470,6 +478,41 @@ mod tests {
 				]),
 			)
 		}
+
+		#[test]
+		fn test_no_separator() {
+			assert_error(
+				"[true false]",
+				JsonParseErrorCause::MismatchedCharacter { expected: b',' }
+			)
+		}
+
+		#[test]
+		fn test_bare_comma() {
+			assert_error(
+				"[, ]",
+				JsonParseErrorCause::UnexpectedCharacter,
+			);
+		}
+
+		#[test]
+		fn test_trailing_comma() {
+			assert_json(
+				"[true, false, ]",
+				Json::Array(vec![
+					true.into(),
+					false.into(),
+				])
+			);
+		}
+
+		#[test]
+		fn test_multiple_trailing_commas() {
+			assert_error(
+				"[true, false,, ]",
+				JsonParseErrorCause::UnexpectedCharacter,
+			);
+		}
 	}
 
 	mod object {
@@ -498,6 +541,39 @@ mod tests {
 			root.insert(String::from("first"), Json::Object(leaf));
 
 			assert_json(r#"{ "first": {"second":0} }"#, Json::Object(root))
+		}
+
+		#[test]
+		fn test_no_separator() {
+			assert_error(
+				r#"{ "first": 1 "second": 2 }"#,
+				JsonParseErrorCause::MismatchedCharacter { expected: b',' },
+			);
+		}
+
+		#[test]
+		fn test_bare_comma() {
+			assert_error(
+				"{, }",
+				JsonParseErrorCause::MismatchedCharacter { expected: b'"' },
+			);
+		}
+
+		#[test]
+		fn test_trailing_comma() {
+			let mut entries = serde_json::Map::new();
+			entries.insert(String::from("first"), Json::Bool(true));
+			entries.insert(String::from("second"), number(0.));
+
+			assert_json(r#"{ "first": true, "second": 0, }"#, Json::Object(entries))
+		}
+
+		#[test]
+		fn test_multiple_trailing_commas() {
+			assert_error(
+				r#"{ "first": true,, }"#,
+				JsonParseErrorCause::MismatchedCharacter { expected: b'"' },
+			);
 		}
 	}
 

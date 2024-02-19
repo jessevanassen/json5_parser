@@ -286,7 +286,7 @@ impl<'a> Parser<'a> {
 					break;
 				}
 
-				parser.index += ch.len_utf8();
+				parser.skip(ch.len_utf8());
 			}
 		}
 
@@ -437,10 +437,16 @@ impl<'a> Parser<'a> {
 
 	fn consume_str(&mut self, str: &[u8]) -> bool {
 		if self.peek_str(str) {
-			self.index += str.len();
+			self.skip(str.len());
 			true
 		} else {
 			false
+		}
+	}
+
+	fn skip(&mut self, n: usize) {
+		for _ in 0..n {
+			self.consume();
 		}
 	}
 

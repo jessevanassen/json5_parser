@@ -1,7 +1,17 @@
 use crate::{error::JsonParseErrorCause, JsonParseError};
 use serde_json::Value as Json;
 
-const WHITESPACE_CHARACTERS: [u8; 4] = [b' ', b'\n', b'\t', b'\r'];
+const WHITESPACE_CHARACTERS: [char; 9] = [
+	' ',
+	'\n',
+	'\t',
+	'\r',
+	'\u{11}', // Vertical tab
+	'\u{0C}', // Form feed
+	'\u{A0}', // Non-breaking space
+	'\u{2029}', // Paragraph separator
+	'\u{FEFF}', // Byte order mark
+];
 
 type Result<T = Json> = ::std::result::Result<T, JsonParseError>;
 
@@ -271,7 +281,13 @@ impl<'a> Parser<'a> {
 	/// whitespace.
 	fn consume_ignorables(&mut self) -> Result<()> {
 		fn consume_whitespace(parser: &mut Parser) {
-			parser.consume_while(|ch| WHITESPACE_CHARACTERS.contains(&ch));
+			for ch in parser.source[parser.index..].chars() {
+				if !WHITESPACE_CHARACTERS.contains(&ch) {
+					break;
+				}
+
+				parser.index += ch.len_utf8();
+			}
 		}
 
 		fn consume_comments(parser: &mut Parser) -> Result<()> {
@@ -782,14 +798,13 @@ mod tests {
 	}
 
 	fn generate_whitespace(length: usize) -> String {
-		let chars = (0..length)
+		(0..length)
 			.map(|_| {
 				rand::seq::SliceRandom::choose(&WHITESPACE_CHARACTERS[..], &mut rand::thread_rng())
 					.copied()
 					.unwrap()
 			})
-			.collect();
-		String::from_utf8(chars).unwrap()
+			.collect()
 	}
 
 	mod comments {

@@ -62,24 +62,52 @@ impl<'a> Parser<'a> {
 	fn parse_number(&mut self) -> Result {
 		let start = self.index;
 
-		self.consume_if(|ch| ch == b'-' || ch == b'+');
+		let sign_token = self.consume_if(|ch| ch == b'-' || ch == b'+');
 
-		self.consume_while(|ch| ch.is_ascii_digit());
+		match (self.peek_n(0), self.peek_n(1)) {
+			(Some(b'0'), Some(b'0'..=b'9')) => {
+				/* Octal is not supported */
+				Err(self.create_error(JsonParseErrorCause::InvalidNumber))
+			}
+			(Some(b'0'), Some(b'x' | b'X')) => {
+				/* Hexadecimal, only integers allowed.
+				 * Rust doesn't natively allow parsing f64 with a radix, or
+				 * integer parsing starting with 0x, so we have to parse this
+				 * out manually. */
+				let sign = if sign_token == Some(b'-') { -1 } else { 1 };
 
-		if self.consume_if(|ch| ch == b'.').is_some() {
-			self.consume_while(|ch| ch.is_ascii_digit());
+				self.consume_n(2);
+
+				let start = self.index;
+
+				self.match_hexdigit()?;
+				self.consume_while(|ch| ch.is_ascii_hexdigit());
+
+				let integer = i64::from_str_radix(&self.source[start..self.index], 16)
+					.map_err(|_| self.create_error(JsonParseErrorCause::InvalidNumber))?;
+				let integer = integer * sign;
+				Ok(number(integer as _))
+			}
+			_ => {
+				/* Decimal, both integers and floating points allowed */
+				self.consume_while(|ch| ch.is_ascii_digit());
+
+				if self.consume_if(|ch| ch == b'.').is_some() {
+					self.consume_while(|ch| ch.is_ascii_digit());
+				}
+
+				if self.consume_if(|ch| ch == b'e' || ch == b'E').is_some() {
+					self.consume_if(|ch| ch == b'+' || ch == b'-');
+					self.match_digit()?;
+					self.consume_while(|ch| ch.is_ascii_digit());
+				}
+
+				self.source[start..self.index]
+					.parse::<f64>()
+					.map(number)
+					.map_err(|_| self.create_error(JsonParseErrorCause::InvalidNumber))
+			}
 		}
-
-		if self.consume_if(|ch| ch == b'e' || ch == b'E').is_some() {
-			self.consume_if(|ch| ch == b'+' || ch == b'-');
-			self.match_digit()?;
-			self.consume_while(|ch| ch.is_ascii_digit());
-		}
-
-		self.source[start..self.index]
-			.parse::<f64>()
-			.map(number)
-			.map_err(|_| self.create_error(JsonParseErrorCause::InvalidNumber))
 	}
 
 	fn parse_string(&mut self) -> Result {
@@ -365,6 +393,16 @@ impl<'a> Parser<'a> {
 		Some(peeked)
 	}
 
+	fn consume_n(&mut self, n: usize) -> bool {
+		for _ in 0..n {
+			if self.consume().is_none() {
+				return false;
+			}
+		}
+
+		true
+	}
+
 	fn consume_if(&mut self, predicate: impl Fn(u8) -> bool) -> Option<u8> {
 		if self.peek().is_some_and(predicate) {
 			self.consume()
@@ -491,6 +529,26 @@ mod tests {
 			assert_eq!(parse_json("1E+3"), Ok(number(1000.)));
 			assert_eq!(parse_json("5e-1"), Ok(number(0.5)));
 			assert_eq!(parse_json("5E-1"), Ok(number(0.5)));
+		}
+
+		#[test]
+		fn test_hexadecimal() {
+			assert_eq!(parse_json("0xf"), Ok(number(0xf as _)));
+			assert_eq!(parse_json("0Xf"), Ok(number(0xf as _)));
+			assert_eq!(parse_json("0x48b"), Ok(number(0x48b as _)));
+			assert_eq!(parse_json("0xb84"), Ok(number(0xb84 as _)));
+
+			assert_eq!(parse_json("-0xf"), Ok(number(-0xf as _)));
+			assert_eq!(parse_json("-0x48b"), Ok(number(-0x48b as _)));
+			assert_eq!(parse_json("-0xb84"), Ok(number(-0xb84 as _)));
+
+			assert_eq!(parse_json("0x5e3"), Ok(number(0x5e3 as _)));
+			assert_eq!(parse_json("-0x5bE3"), Ok(number(-0x5be3 as _)));
+		}
+
+		#[test]
+		fn test_octal_unsupported() {
+			assert!(parse_json("01").is_err());
 		}
 	}
 
